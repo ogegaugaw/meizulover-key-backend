@@ -1,9 +1,8 @@
-require("dotenv").config();
-
 const express = require("express");
 const cors = require("cors");
 const crypto = require("crypto");
 const admin = require("firebase-admin");
+require("dotenv").config();
 
 const app = express();
 
@@ -12,396 +11,287 @@ app.use(express.json());
 
 const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_JSON
   ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON)
-  : require("./ogekeyl4m-service-account.json");	
+  : require("./ogekeyl4m-service-account.json");
 
 admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-    databaseURL: process.env.FIREBASE_DATABASE_URL
+  credential: admin.credential.cert(serviceAccount),
+  databaseURL: process.env.FIREBASE_DATABASE_URL
 });
 
 const db = admin.database();
 
 function randomString(length = 9) {
-    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-
-    let result = "";
-
-    for (let i = 0; i < length; i++) {
-        result += chars[
-            crypto.randomInt(0, chars.length)
-        ];
-    }
-
-    return result;
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let result = "";
+  for (let i = 0; i < length; i++) {
+    result += chars[crypto.randomInt(0, chars.length)];
+  }
+  return result;
 }
 
 function generateKey() {
-    return "meizulover_" + randomString(9);
+  return "lovemeizu_" + randomString(9);
 }
 
-function generateSession() {
-    return crypto.randomBytes(24).toString("hex");
-}	
+function generateToken() {
+  return crypto.randomBytes(32).toString("hex");
+}
 
-app.post("/create", async (req, res) => {
-    try {
-        const session = generateSession();
-        const key = generateKey();
-
-        const now = Date.now();
-        const expiresAt = now + (30 * 60 * 1000);
-
-        const destination =
-            `${process.env.BASE_URL}/get-key.html?session=${encodeURIComponent(session)}`;
-
-        // Lưu session
-        await db.ref("sessions/" + session).set({
-            key: key,
-            claimed: false,
-            createdAt: now,
-            expiresAt: expiresAt
-        });
-
-        // Lưu key
-        await db.ref("keys/" + key).set({
-            session: session,
-            used: false,
-            createdAt: now,
-            expiresAt: expiresAt
-        });
-
-        // Tạo Link4M
-        const apiUrl =
-            "https://link4m.co/api-shorten/v2" +
-            "?api=" +
-            encodeURIComponent(process.env.LINK4M_API_KEY) +
-            "&url=" +
-            encodeURIComponent(destination);
-
-        console.log("Dang tao Link4M...");
-
-        const response = await fetch(apiUrl);
-        const responseText = await response.text();
-
-        console.log("Link4M HTTP:", response.status);
-        console.log("Link4M RAW:", responseText);
-
-        if (!response.ok) {
-            throw new Error(
-                "Link4M HTTP " + response.status + " | " + responseText
-            );
-        }
-
-        let data;
-
-        try {
-            data = JSON.parse(responseText);
-        } catch (e) {
-            throw new Error(
-                "Link4M khong tra JSON: " + responseText
-            );
-        }
-
-        if (data.status !== "success") {
-            throw new Error(
-                "Link4M failed: " +
-                (data.message || responseText)
-            );
-        }
-
-        if (!data.shortenedUrl) {
-            throw new Error(
-                "Link4M khong co shortenedUrl"
-            );
-        }
-
-        const shortUrl = data.shortenedUrl;
-
-        // Lưu link rút gọn
-        await db.ref("sessions/" + session).update({
-            link4m: shortUrl
-        });
-
-        await db.ref("keys/" + key).update({
-            link4m: shortUrl
-        });
-
-        // Không trả key về client
-        res.json({
-            success: true,
-            session: session,
-            shortUrl: shortUrl
-        });
-
-    } catch (error) {
-        console.error("CREATE ERROR:", error);
-
-        res.status(500).json({
-            success: false,
-            error: "CREATE_FAILED"
-        });
-    }
-});
-app.post("/verify", async (req, res) => {
-
-    try {
-
-        const key = String(req.body.key || "").trim();
-
-        if (!key) {
-            return res.json({
-                success: false,
-                error: "EMPTY_KEY"
-            });
-        }
-
-        const snapshot =
-            await db.ref("keys/" + key).once("value");
-
-        if (!snapshot.exists()) {
-            return res.json({
-                success: false,
-                error: "INVALID_KEY"
-            });
-        }
-
-        const data = snapshot.val();
-
-        if (data.used === true) {
-            return res.json({
-                success: false,
-                error: "KEY_USED"
-            });
-        }
-
-        if (Date.now() > data.expiresAt) {
-            return res.json({
-                success: false,
-                error: "KEY_EXPIRED"
-            });
-        }
-
-        res.json({
-            success: true
-        });
-
-    } catch (error) {
-
-        console.error(error);
-
-        res.status(500).json({
-            success: false,
-            error: "VERIFY_FAILED"
-        });
-
-    }
-
-});
-app.post("/consume", async (req,res)=>{
-  try{
-    const key=String(req.body.key||"").trim();
-    if(!key)return res.json({success:false,error:"EMPTY_KEY"});
-
-    const ref=db.ref("keys/"+key);
-    const snap=await ref.once("value");
-
-    if(!snap.exists())return res.json({success:false,error:"INVALID_KEY"});
-
-    const data=snap.val();
-
-    if(!data.expiresAt||Date.now()>data.expiresAt)
-      return res.json({success:false,error:"KEY_EXPIRED"});
-
-    const usedRef=ref.child("used");
-
-    const result=await usedRef.transaction(used=>{
-      if(used===true)return;
-      return true;
-    });
-
-    if(!result.committed)
-      return res.json({success:false,error:"KEY_ALREADY_USED"});
-
-    await ref.update({usedAt:Date.now()});
-
-    return res.json({success:true});
-  }catch(error){
-    console.error("CONSUME ERROR:",error);
-    return res.status(500).json({success:false,error:"CONSUME_FAILED"});
-  }
-});
-app.post("/session-info", async (req, res) => {
-  try {
-    const session = String(req.body.session || "").trim();
-
-    if (!session) {
-      return res.json({
-        success: false,
-        error: "MISSING_SESSION"
-      });
-    }
-
-    const snapshot = await db
-      .ref("sessions/" + session)
-      .once("value");
-
-    if (!snapshot.exists()) {
-      return res.json({
-        success: false,
-        error: "INVALID_SESSION"
-      });
-    }
-
-    const data = snapshot.val();
-
-    if (!data.expiresAt || Date.now() > data.expiresAt) {
-      return res.json({
-        success: false,
-        error: "SESSION_EXPIRED"
-      });
-    }
-
-    res.json({
-      success: true,
-      claimed: data.claimed === true,
-      expiresAt: data.expiresAt
-    });
-
-  } catch (error) {
-    console.error("SESSION INFO ERROR:", error);
-
-    res.status(500).json({
-      success: false,
-      error: "SESSION_INFO_FAILED"
-    });
-  }
-});
-app.post("/claim", async (req, res) => {
-  try {
-    const session = String(req.body.session || "").trim();
-
-    if (!session) {
-      return res.json({
-        success: false,
-        error: "MISSING_SESSION"
-      });
-    }
-
-    const sessionRef = db.ref("sessions/" + session);
-    const snapshot = await sessionRef.once("value");
-
-    if (!snapshot.exists()) {
-      return res.json({
-        success: false,
-        error: "INVALID_SESSION"
-      });
-    }
-
-    const current = snapshot.val();
-
-    if (!current.expiresAt || Date.now() > current.expiresAt) {
-      return res.json({
-        success: false,
-        error: "SESSION_EXPIRED"
-      });
-    }
-
-    if (!current.key) {
-      return res.json({
-        success: false,
-        error: "KEY_NOT_FOUND_IN_SESSION"
-      });
-    }
-
-    const claimedRef = sessionRef.child("claimed");
-
-    const result = await claimedRef.transaction((claimed) => {
-      if (claimed === true) return;
-      return true;
-    });
-
-    if (!result.committed) {
-      return res.json({
-        success: false,
-        error: "KEY_ALREADY_CLAIMED"
-      });
-    }
-
-    const finalSnapshot = await sessionRef.once("value");
-    const data = finalSnapshot.val();
-    const key = data.key;
-
-    const keyRef = db.ref("keys/" + key);
-    const keySnapshot = await keyRef.once("value");
-
-    if (!keySnapshot.exists()) {
-      return res.json({
-        success: false,
-        error: "KEY_NOT_FOUND"
-      });
-    }
-
-    const keyData = keySnapshot.val();
-
-    if (keyData.used === true) {
-      return res.json({
-        success: false,
-        error: "KEY_USED"
-      });
-    }
-
-    if (!keyData.expiresAt || Date.now() > keyData.expiresAt) {
-      return res.json({
-        success: false,
-        error: "KEY_EXPIRED"
-      });
-    }
-
-    return res.json({
-      success: true,
-      key: key,
-      expiresAt: keyData.expiresAt
-    });
-
-  } catch (error) {
-    console.error("CLAIM ERROR:", error);
-
-    return res.status(500).json({
-      success: false,
-      error: "CLAIM_FAILED",
-      detail: error.message
-    });
-  }
-});;
 app.get("/health", (req, res) => {
   res.json({
     success: true,
     service: "meizulover-key-system"
   });
 });
-app.listen(process.env.PORT, () => {
-    console.log(
-        `Server running on port ${process.env.PORT}`
-    );
-});
-function randomString(length = 9) {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
-  let result = "";
+app.post("/create", async (req, res) => {
+  try {
+    const key = generateKey();
+    const token = generateToken();
+    const createdAt = Date.now();
 
-  for (let i = 0; i < length; i++) {
-    result += chars.charAt(
-      crypto.randomInt(0, chars.length)
-    );
+    const destination =
+      `${process.env.BASE_URL}/get-key.html?token=${encodeURIComponent(token)}`;
+
+    const keyRef = db.ref("keys/" + key);
+
+    await keyRef.set({
+      created_at: createdAt,
+      Link4m: "",
+      token: token,
+      used: false
+    });
+
+    const apiUrl =
+      "https://link4m.co/api-shorten/v2" +
+      "?api=" + encodeURIComponent(process.env.LINK4M_API_KEY) +
+      "&url=" + encodeURIComponent(destination);
+
+    const response = await fetch(apiUrl);
+    const responseText = await response.text();
+
+    if (!response.ok) {
+      throw new Error(
+        "Link4M HTTP " + response.status + " | " + responseText
+      );
+    }
+
+    const data = JSON.parse(responseText);
+
+    if (data.status !== "success" || !data.shortenedUrl) {
+      throw new Error("Link4M failed");
+    }
+
+    await keyRef.update({
+      Link4m: data.shortenedUrl
+    });
+
+    res.json({
+      success: true,
+      token: token,
+      shortUrl: data.shortenedUrl
+    });
+
+  } catch (error) {
+    console.error("CREATE ERROR:", error);
+    res.status(500).json({
+      success: false,
+      error: "CREATE_FAILED"
+    });
   }
+});
 
-  return result;
+async function findKeyByToken(token) {
+  const snapshot = await db
+    .ref("keys")
+    .orderByChild("token")
+    .equalTo(token)
+    .once("value");
+
+  if (!snapshot.exists()) return null;
+
+  const data = snapshot.val();
+  const names = Object.keys(data);
+
+  if (!names.length) return null;
+
+  return {
+    key: names[0],
+    data: data[names[0]]
+  };
 }
 
-function generateKey() {
-  return "meizulover_" + randomString(9);
-}
+app.post("/session-info", async (req, res) => {
+  try {
+    const token = String(req.body.token || "").trim();
 
-function generateSession() {
-  return crypto.randomBytes(24).toString("hex");
-}
+    if (!token) {
+      return res.json({
+        success: false,
+        error: "MISSING_TOKEN"
+      });
+    }
+
+    const result = await findKeyByToken(token);
+
+    if (!result) {
+      return res.json({
+        success: false,
+        error: "INVALID_TOKEN"
+      });
+    }
+
+    res.json({
+      success: true,
+      used: result.data.used === true
+    });
+
+  } catch (error) {
+    console.error("SESSION INFO ERROR:", error);
+    res.status(500).json({
+      success: false,
+      error: "SESSION_INFO_FAILED"
+    });
+  }
+});
+
+app.post("/claim", async (req, res) => {
+  try {
+    const token = String(req.body.token || "").trim();
+
+    if (!token) {
+      return res.json({
+        success: false,
+        error: "MISSING_TOKEN"
+      });
+    }
+
+    const result = await findKeyByToken(token);
+
+    if (!result) {
+      return res.json({
+        success: false,
+        error: "INVALID_TOKEN"
+      });
+    }
+
+    if (result.data.used === true) {
+      return res.json({
+        success: false,
+        error: "KEY_USED"
+      });
+    }
+
+    res.json({
+      success: true,
+      key: result.key
+    });
+
+  } catch (error) {
+    console.error("CLAIM ERROR:", error);
+    res.status(500).json({
+      success: false,
+      error: "CLAIM_FAILED"
+    });
+  }
+});
+
+app.post("/verify", async (req, res) => {
+  try {
+    const key = String(req.body.key || "").trim();
+
+    if (!key) {
+      return res.json({
+        success: false,
+        error: "EMPTY_KEY"
+      });
+    }
+
+    const snapshot = await db
+      .ref("keys/" + key)
+      .once("value");
+
+    if (!snapshot.exists()) {
+      return res.json({
+        success: false,
+        error: "INVALID_KEY"
+      });
+    }
+
+    const data = snapshot.val();
+
+    if (data.used === true) {
+      return res.json({
+        success: false,
+        error: "KEY_USED"
+      });
+    }
+
+    res.json({
+      success: true
+    });
+
+  } catch (error) {
+    console.error("VERIFY ERROR:", error);
+    res.status(500).json({
+      success: false,
+      error: "VERIFY_FAILED"
+    });
+  }
+});
+
+app.post("/consume", async (req, res) => {
+  try {
+    const key = String(req.body.key || "").trim();
+
+    if (!key) {
+      return res.json({
+        success: false,
+        error: "EMPTY_KEY"
+      });
+    }
+
+    const ref = db.ref("keys/" + key);
+    const snapshot = await ref.once("value");
+
+    if (!snapshot.exists()) {
+      return res.json({
+        success: false,
+        error: "INVALID_KEY"
+      });
+    }
+
+    const result = await ref.child("used").transaction((used) => {
+      if (used === true) return;
+      return true;
+    });
+
+    if (!result.committed) {
+      return res.json({
+        success: false,
+        error: "KEY_ALREADY_USED"
+      });
+    }
+
+    await ref.update({
+      usedAt: Date.now()
+    });
+
+    res.json({
+      success: true
+    });
+
+  } catch (error) {
+    console.error("CONSUME ERROR:", error);
+    res.status(500).json({
+      success: false,
+      error: "CONSUME_FAILED"
+    });
+  }
+});
+
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log("Server running on port " + PORT);
+});
