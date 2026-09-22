@@ -315,7 +315,6 @@ app.post("/claim", async (req, res) => {
     }
 
     const sessionRef = db.ref("sessions/" + session);
-
     const snapshot = await sessionRef.once("value");
 
     if (!snapshot.exists()) {
@@ -327,10 +326,10 @@ app.post("/claim", async (req, res) => {
 
     const current = snapshot.val();
 
-    if (current.claimed === true) {
+    if (!current.expiresAt || Date.now() > current.expiresAt) {
       return res.json({
         success: false,
-        error: "KEY_ALREADY_CLAIMED"
+        error: "SESSION_EXPIRED"
       });
     }
 
@@ -341,44 +340,22 @@ app.post("/claim", async (req, res) => {
       });
     }
 
-    if (!current.expiresAt || Date.now() > current.expiresAt) {
-      return res.json({
-        success: false,
-        error: "SESSION_EXPIRED"
-      });
-    }
+    const claimedRef = sessionRef.child("claimed");
 
-    const result = await sessionRef.transaction((data) => {
-      if (!data) return;
-
-      if (data.claimed === true) return;
-
-      if (!data.key) return;
-
-      if (!data.expiresAt || Date.now() > data.expiresAt) {
-        return;
-      }
-
-      data.claimed = true;
-      data.claimedAt = Date.now();
-
-      return data;
+    const result = await claimedRef.transaction((claimed) => {
+      if (claimed === true) return;
+      return true;
     });
 
     if (!result.committed) {
-      const check = await sessionRef.once("value");
-      const data = check.val();
-
       return res.json({
         success: false,
-        error: "CLAIM_NOT_COMMITTED",
-        exists: check.exists(),
-        claimed: data ? data.claimed === true : null,
-        hasKey: data ? !!data.key : false
+        error: "KEY_ALREADY_CLAIMED"
       });
     }
 
-    const data = result.snapshot.val();
+    const finalSnapshot = await sessionRef.once("value");
+    const data = finalSnapshot.val();
     const key = data.key;
 
     const keyRef = db.ref("keys/" + key);
@@ -422,7 +399,7 @@ app.post("/claim", async (req, res) => {
       detail: error.message
     });
   }
-});
+});;
 app.get("/health", (req, res) => {
   res.json({
     success: true,
