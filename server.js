@@ -203,19 +203,26 @@ app.post("/consume", async (req,res)=>{
     if(!key)return res.json({success:false,error:"EMPTY_KEY"});
 
     const ref=db.ref("keys/"+key);
+    const snap=await ref.once("value");
 
-    const result=await ref.transaction(data=>{
-      if(!data)return;
-      if(data.used===true)return;
-      if(!data.expiresAt||Date.now()>data.expiresAt)return;
-      data.used=true;
-      data.usedAt=Date.now();
-      return data;
+    if(!snap.exists())return res.json({success:false,error:"INVALID_KEY"});
+
+    const data=snap.val();
+
+    if(!data.expiresAt||Date.now()>data.expiresAt)
+      return res.json({success:false,error:"KEY_EXPIRED"});
+
+    const usedRef=ref.child("used");
+
+    const result=await usedRef.transaction(used=>{
+      if(used===true)return;
+      return true;
     });
 
-    if(!result.committed){
-      return res.json({success:false,error:"INVALID_OR_USED"});
-    }
+    if(!result.committed)
+      return res.json({success:false,error:"KEY_ALREADY_USED"});
+
+    await ref.update({usedAt:Date.now()});
 
     return res.json({success:true});
   }catch(error){
