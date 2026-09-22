@@ -426,15 +426,15 @@ app.post("/claim", async (req, res) => {
       expiresAt: keyData.expiresAt
     });
 
-  } catch (error) {
-
+} catch(error) {
     console.error("CLAIM ERROR:", error);
 
     res.status(500).json({
-      success: false,
-      error: "CLAIM_FAILED"
+        success: false,
+        error: "CLAIM_FAILED",
+        detail: error.message
     });
-  }
+}
 });
 app.get("/health", (req, res) => {
   res.json({
