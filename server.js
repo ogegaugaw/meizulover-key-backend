@@ -197,65 +197,31 @@ app.post("/verify", async (req, res) => {
     }
 
 });
-app.post("/consume", async (req, res) => {
+app.post("/consume", async (req,res)=>{
+  try{
+    const key=String(req.body.key||"").trim();
+    if(!key)return res.json({success:false,error:"EMPTY_KEY"});
 
-    try {
+    const ref=db.ref("keys/"+key);
 
-        const key = String(req.body.key || "").trim();
+    const result=await ref.transaction(data=>{
+      if(!data)return;
+      if(data.used===true)return;
+      if(!data.expiresAt||Date.now()>data.expiresAt)return;
+      data.used=true;
+      data.usedAt=Date.now();
+      return data;
+    });
 
-        if (!key) {
-            return res.json({
-                success: false,
-                error: "EMPTY_KEY"
-            });
-        }
-
-        const ref = db.ref("keys/" + key);
-
-        const result = await ref.transaction((data) => {
-
-            if (!data) {
-                return;
-            }
-
-            if (data.used === true) {
-                return;
-            }
-
-            if (Date.now() > data.expiresAt) {
-                return;
-            }
-
-            data.used = true;
-            data.usedAt = Date.now();
-
-            return data;
-        });
-
-        if (!result.committed) {
-
-            return res.json({
-                success: false,
-                error: "INVALID_OR_USED"
-            });
-
-        }
-
-        res.json({
-            success: true
-        });
-
-    } catch (error) {
-
-        console.error(error);
-
-        res.status(500).json({
-            success: false,
-            error: "CONSUME_FAILED"
-        });
-
+    if(!result.committed){
+      return res.json({success:false,error:"INVALID_OR_USED"});
     }
 
+    return res.json({success:true});
+  }catch(error){
+    console.error("CONSUME ERROR:",error);
+    return res.status(500).json({success:false,error:"CONSUME_FAILED"});
+  }
 });
 app.post("/session-info", async (req, res) => {
   try {
