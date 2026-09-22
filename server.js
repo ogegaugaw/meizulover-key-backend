@@ -316,28 +316,46 @@ app.post("/claim", async (req, res) => {
 
     const sessionRef = db.ref("sessions/" + session);
 
-    /*
-     * Transaction giúp chống 2 thiết bị
-     * cùng claim một session.
-     */
+    const snapshot = await sessionRef.once("value");
+
+    if (!snapshot.exists()) {
+      return res.json({
+        success: false,
+        error: "INVALID_SESSION"
+      });
+    }
+
+    const current = snapshot.val();
+
+    if (current.claimed === true) {
+      return res.json({
+        success: false,
+        error: "KEY_ALREADY_CLAIMED"
+      });
+    }
+
+    if (!current.key) {
+      return res.json({
+        success: false,
+        error: "KEY_NOT_FOUND_IN_SESSION"
+      });
+    }
+
+    if (!current.expiresAt || Date.now() > current.expiresAt) {
+      return res.json({
+        success: false,
+        error: "SESSION_EXPIRED"
+      });
+    }
+
     const result = await sessionRef.transaction((data) => {
+      if (!data) return;
 
-      if (!data) {
-        return;
-      }
+      if (data.claimed === true) return;
 
-      // Session đã được claim
-      if (data.claimed === true) {
-        return;
-      }
+      if (!data.key) return;
 
-      // Session hết hạn
       if (!data.expiresAt || Date.now() > data.expiresAt) {
-        return;
-      }
-
-      // Không có Key
-      if (!data.key) {
         return;
       }
 
@@ -348,51 +366,23 @@ app.post("/claim", async (req, res) => {
     });
 
     if (!result.committed) {
-
-      const snapshot =
-        await sessionRef.once("value");
-
-      if (!snapshot.exists()) {
-        return res.json({
-          success: false,
-          error: "INVALID_SESSION"
-        });
-      }
-
-      const data = snapshot.val();
-
-      if (data.claimed === true) {
-        return res.json({
-          success: false,
-          error: "KEY_ALREADY_CLAIMED"
-        });
-      }
-
-      if (
-        !data.expiresAt ||
-        Date.now() > data.expiresAt
-      ) {
-        return res.json({
-          success: false,
-          error: "SESSION_EXPIRED"
-        });
-      }
+      const check = await sessionRef.once("value");
+      const data = check.val();
 
       return res.json({
         success: false,
-        error: "CLAIM_FAILED"
+        error: "CLAIM_NOT_COMMITTED",
+        exists: check.exists(),
+        claimed: data ? data.claimed === true : null,
+        hasKey: data ? !!data.key : false
       });
     }
 
     const data = result.snapshot.val();
-
     const key = data.key;
 
-    // Kiểm tra Key trong Firebase
     const keyRef = db.ref("keys/" + key);
-
-    const keySnapshot =
-      await keyRef.once("value");
+    const keySnapshot = await keyRef.once("value");
 
     if (!keySnapshot.exists()) {
       return res.json({
@@ -410,31 +400,28 @@ app.post("/claim", async (req, res) => {
       });
     }
 
-    if (
-      !keyData.expiresAt ||
-      Date.now() > keyData.expiresAt
-    ) {
+    if (!keyData.expiresAt || Date.now() > keyData.expiresAt) {
       return res.json({
         success: false,
         error: "KEY_EXPIRED"
       });
     }
 
-    res.json({
+    return res.json({
       success: true,
       key: key,
       expiresAt: keyData.expiresAt
     });
 
-} catch(error) {
+  } catch (error) {
     console.error("CLAIM ERROR:", error);
 
-    res.status(500).json({
-        success: false,
-        error: "CLAIM_FAILED",
-        detail: error.message
+    return res.status(500).json({
+      success: false,
+      error: "CLAIM_FAILED",
+      detail: error.message
     });
-}
+  }
 });
 app.get("/health", (req, res) => {
   res.json({
